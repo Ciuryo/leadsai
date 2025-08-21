@@ -19,7 +19,7 @@ from bs4 import BeautifulSoup
 from requests.exceptions import HTTPError, Timeout, RequestException
 
 # ETAPA 1: CONFIGURAÇÕES E CONHECIMENTO BASE
-
+#edit
 # Carrega variáveis de ambiente
 load_dotenv()
 API_KEY = os.getenv("OPENAI_API_KEY")
