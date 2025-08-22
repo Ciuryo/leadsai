@@ -751,17 +751,14 @@ def call_model(state):
             from langchain_core.messages import AIMessage
             return {"messages": messages + [AIMessage(content=f"[ERRO] Falha no OpenAI e OpenRouter: {str(e)} | {str(e2)}")]}
 
-def call_openrouter_model(state):
+def call_openrouter_model(state): #quando a open ai falhar vai chamar o segundo modelo, modelo gratuito teste.
     
-    import os
-    import requests
 
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
     if not OPENROUTER_API_KEY:
         raise ValueError("Chave da API do OpenRouter não encontrada. Verifique seu arquivo .env")
 
     messages = state["messages"]
-    # Find the last HumanMessage or fallback to last message
     user_message = None
     for msg in reversed(messages):
         if getattr(msg, "type", None) == "human" or getattr(msg, "role", None) == "user":
@@ -787,12 +784,11 @@ def call_openrouter_model(state):
         response = requests.post(url, headers=headers, json=data, timeout=30)
         response.raise_for_status()
         result = response.json()
-        # Extract the model's reply
         reply = result["choices"][0]["message"]["content"]
     except Exception as e:
         reply = f"[ERRO_OPENROUTER:{str(e)}]"
 
-    # Return as a new message in the state
+    # status
     from langchain_core.messages import AIMessage
     return {"messages": state["messages"] + [AIMessage(content=reply)]}
 
@@ -800,7 +796,6 @@ def should_continue(state):
     last_message = state["messages"][-1]
     if getattr(last_message, "tool_calls", None):
         return "continue"
-    # End if no tool calls; do not call openrouter unless fallback is needed
     return "end"
 
 workflow = StateGraph(AgentState)
@@ -814,6 +809,5 @@ workflow.add_conditional_edges(
     {"continue": "action", "openrouter": "openrouter", "end": END},
 )
 workflow.add_edge("action", "agent")
-# After openrouter, end the workflow
 workflow.add_edge("openrouter", END)
 agent_graph_leads = workflow.compile()
