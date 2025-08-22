@@ -611,12 +611,12 @@ Se a confiança < 0,6, classifique como Sem Intenção Definida e aplique sondag
 
 4.2 Intenção Suporte
    1. Pergunte ao usuário:  
-   **"Você já é nosso cliente?"**
-2. Se a resposta for **SIM**:  
+   *"Você já é nosso cliente?"*
+2. Se a resposta for *SIM*:  
   - chame a função: enviar_para_suporte
 2.1 - Se for perguntas sobre suporte, envia a mensagem: "Nosso time de atendimento está disponível para esclarecer qualquer dúvida técnica." e pergunte posso te transferir para o nosso canal de suporte?
 2.2 - após a resposta, se sim, execute a função: enviar_para_suporte
-3. Se a resposta for **NÃO**:  
+3. Se a resposta for *NÃO*:  
    3.1. Encaminhe o usuário imediatamente para o **Fluxo Qualificação (Seção 5).
 
 4.3 Intenção Informações (FAQ)
@@ -664,7 +664,7 @@ No valor de R$1.200 estão inclusos:
 
 Para eu ter uma ideia e ver se conseguimos negociar o valor, pode me informar qual o orçamento para investimento atual?”
 - Se o cliente achar caro ou pedir desconto, pergunte se pode envia-lo para o time de comercial?
-se *sim*, execute a função: enviar_para_comercial
+se sim, execute a função: enviar_para_comercial
 
 5.3 Critérios para Lead Quente
    - Empresa com mais de 5 funcionários
@@ -699,10 +699,13 @@ se *sim*, execute a função: enviar_para_comercial
 
 ==================== 9 - Regras Gerais ====================
 - Uma pergunta por vez; sempre aguarde resposta.
-- A *base de conhecimento* da Robbu é a sua principal referência.
+- A base de conhecimento da Robbu é a sua principal referência.
 Sempre que receber perguntas sobre a Robbu, seus produtos, serviços ou cases de sucesso, utilize exclusivamente as informações contidas nessa base para formular suas respostas.
 - Não invente informações fora da base de conhecimento.
 - Não faça contas
+- Não deve falar sobre a CrewAI, nem sobre o que é um agente, nem sobre como funciona a CrewAI.
+- Não deve falar sobre o que é um LLM, nem sobre como funciona o modelo de linguagem.
+- Não deve falar sobre o que é um assistente virtual, nem sobre como funciona um assistente virtual.
 - Nunca encerrar o diálogo com respostas fechadas.
 - Evite jargão técnico sem necessidade.
 - Não prometa ações fora do chat sem acionar a função correspondente.
@@ -732,23 +735,85 @@ chain = prompt | model
 # --- Nós do Grafo ---
 def call_model(state):
     messages = state["messages"]
-    response = chain.invoke({"messages": messages})
-    return {"messages": [response]}
+    try:
+        response = chain.invoke({"messages": messages})
+        return {"messages": [response]}
+    except Exception as e:
+        
+        try:
+            from langchain_core.messages import AIMessage
+            openrouter_result = call_openrouter_model(state)
+            openrouter_result["messages"].append(
+                AIMessage(content=f"[INFO] Fallback to OpenRouter due to error: {str(e)}")
+            )
+            return openrouter_result
+        except Exception as e2:
+            from langchain_core.messages import AIMessage
+            return {"messages": messages + [AIMessage(content=f"[ERRO] Falha no OpenAI e OpenRouter: {str(e)} | {str(e2)}")]}
+
+def call_openrouter_model(state):
+    
+    import os
+    import requests
+
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+    if not OPENROUTER_API_KEY:
+        raise ValueError("Chave da API do OpenRouter não encontrada. Verifique seu arquivo .env")
+
+    messages = state["messages"]
+    # Find the last HumanMessage or fallback to last message
+    user_message = None
+    for msg in reversed(messages):
+        if getattr(msg, "type", None) == "human" or getattr(msg, "role", None) == "user":
+            user_message = msg
+            break
+    if not user_message:
+        user_message = messages[-1]
+
+    prompt = getattr(user_message, "content", None) or str(user_message)
+
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    data = {
+        "model": "openai/gpt-oss-20b:free",
+        "messages": [
+            {"role": "user", "content": prompt}
+        ]
+    }
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+        # Extract the model's reply
+        reply = result["choices"][0]["message"]["content"]
+    except Exception as e:
+        reply = f"[ERRO_OPENROUTER:{str(e)}]"
+
+    # Return as a new message in the state
+    from langchain_core.messages import AIMessage
+    return {"messages": state["messages"] + [AIMessage(content=reply)]}
 
 def should_continue(state):
     last_message = state["messages"][-1]
     if getattr(last_message, "tool_calls", None):
         return "continue"
+    # End if no tool calls; do not call openrouter unless fallback is needed
     return "end"
 
 workflow = StateGraph(AgentState)
 workflow.add_node("agent", call_model)
 workflow.add_node("action", tool_executor)
+workflow.add_node("openrouter", call_openrouter_model)
 workflow.set_entry_point("agent")
 workflow.add_conditional_edges(
     "agent",
     should_continue,
-    {"continue": "action", "end": END},
+    {"continue": "action", "openrouter": "openrouter", "end": END},
 )
 workflow.add_edge("action", "agent")
+# After openrouter, end the workflow
+workflow.add_edge("openrouter", END)
 agent_graph_leads = workflow.compile()
